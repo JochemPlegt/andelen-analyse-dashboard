@@ -9,6 +9,8 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import yfinance as yf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from data_fetcher import fetch_all
 from indicators import add_indicators
@@ -74,17 +76,30 @@ with st.sidebar:
     st.divider()
 
     # Auto-refresh
-    auto_refresh = st.toggle("Auto-refresh (elk uur)", value=False)
+    import time
+    auto_refresh = st.toggle("Auto-refresh", value=False)
     if auto_refresh:
-        import time
+        interval_label = st.selectbox(
+            "Interval",
+            ["5 minuten", "15 minuten", "30 minuten", "1 uur", "4 uur"],
+            index=2,
+        )
+        interval_secs = {
+            "5 minuten": 300, "15 minuten": 900,
+            "30 minuten": 1800, "1 uur": 3600, "4 uur": 14400,
+        }[interval_label]
+
         if "last_refresh" not in st.session_state:
             st.session_state["last_refresh"] = time.time()
-        elif time.time() - st.session_state["last_refresh"] > 3600:
+        elif time.time() - st.session_state["last_refresh"] > interval_secs:
             st.cache_data.clear()
             st.session_state["last_refresh"] = time.time()
             st.rerun()
-        mins_left = max(0, int((3600 - (time.time() - st.session_state["last_refresh"])) / 60))
-        st.caption(f"Volgende refresh over ~{mins_left} min.")
+
+        elapsed  = time.time() - st.session_state["last_refresh"]
+        remaining = max(0, int((interval_secs - elapsed) / 60))
+        secs_rem  = max(0, int((interval_secs - elapsed) % 60))
+        st.caption(f"Volgende refresh over ~{remaining}m {secs_rem}s")
 
     if st.button("🔄 Nu verversen", use_container_width=True):
         st.cache_data.clear()
@@ -150,15 +165,141 @@ def load_all(period: str):
     return {name: add_indicators(df) for name, df in raw.items()}
 
 
+@st.cache_data(ttl=300, show_spinner="Intraday data ophalen...")  # 5 min cache
+def load_intraday(symbol: str, interval: str = "5m"):
+    """
+    Haalt intraday koersdata op via yfinance.
+    Vertraging: ~15 minuten (Yahoo Finance limiet).
+    Beschikbare intervallen: 1m (7d), 5m (60d), 15m (60d), 1h (730d)
+    """
+    try:
+        period = "1d" if interval in ("1m", "5m", "15m") else "5d"
+        df = yf.download(symbol, period=period, interval=interval,
+                         progress=False, auto_adjust=True)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.index = pd.to_datetime(df.index)
+        return df
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_signals, tab_backtest, tab_overview, tab_uitleg = st.tabs([
+tab_live, tab_signals, tab_backtest, tab_overview, tab_uitleg = st.tabs([
+    "📡 Live koers",
     "📊 Technische signalen",
     "🧪 Backtest",
     "🗂️ Overzicht AEX",
     "📚 Wat betekent dit?",
 ])
+
+# ── Tab 0: Live koers ────────────────────────────────────────────────────────
+with tab_live:
+    st.title(f"📡 Live koers — {selected_name}")
+    st.caption("⚠️ Data via Yahoo Finance heeft ~15 minuten vertraging. "
+               "Buiten handelstijd zie je de laatste beschikbare koers.")
+
+    if not selected_symbol:
+        st.info("Voer een ticker in via de sidebar.")
+    else:
+        # Interval-keuze
+        col_int, col_ref = st.columns([3, 1])
+        with col_int:
+            intraday_interval = st.radio(
+                "Interval",
+                ["1m", "5m", "15m", "1h"],
+                index=1,
+                horizontal=True,
+                captions=["1 min (vandaag)", "5 min (vandaag)",
+                          "15 min (vandaag)", "1 uur (5 dagen)"],
+            )
+        with col_ref:
+            st.write("")
+            if st.button("🔄 Verversen", key="live_refresh"):
+                st.cache_data.clear()
+                st.rerun()
+
+        df_intra = load_intraday(selected_symbol, intraday_interval)
+
+        if df_intra is None or df_intra.empty:
+            st.warning("Geen intraday data beschikbaar. "
+                       "De markt is mogelijk gesloten of de ticker is onbekend.")
+        else:
+            # KPI's
+            last      = df_intra.iloc[-1]
+            first     = df_intra.iloc[0]
+            cur_price = float(last["Close"])
+            day_open  = float(first["Open"])
+            day_high  = float(df_intra["High"].max())
+            day_low   = float(df_intra["Low"].min())
+            change    = cur_price - day_open
+            change_pct = (change / day_open) * 100
+
+            k1, k2, k3, k4, k5 = st.columns(5)
+            k1.metric("Huidige koers",  f"€{cur_price:.2f}",
+                      f"{change:+.2f} ({change_pct:+.2f}%)",
+                      delta_color="normal" if change >= 0 else "inverse")
+            k2.metric("Daghoog",  f"€{day_high:.2f}")
+            k3.metric("Daglaag",  f"€{day_low:.2f}")
+            k4.metric("Opening",  f"€{day_open:.2f}")
+            k5.metric("Laatste update",
+                      df_intra.index[-1].strftime("%H:%M"),
+                      "~15 min vertraging", delta_color="off")
+
+            st.divider()
+
+            # Intraday candlestick grafiek
+            template = "plotly_dark" if dark_mode else "plotly_white"
+            fig = make_subplots(
+                rows=2, cols=1, shared_xaxes=True,
+                row_heights=[0.75, 0.25], vertical_spacing=0.02,
+            )
+            fig.add_trace(go.Candlestick(
+                x=df_intra.index,
+                open=df_intra["Open"], high=df_intra["High"],
+                low=df_intra["Low"],   close=df_intra["Close"],
+                name="Koers",
+                increasing_line_color="#26a69a",
+                decreasing_line_color="#ef5350",
+            ), row=1, col=1)
+
+            # Daggemiddelde lijn
+            avg = df_intra["Close"].mean()
+            fig.add_hline(y=avg, line_dash="dot", line_color="#f59e0b",
+                          annotation_text=f"Gem. €{avg:.2f}", row=1, col=1)
+
+            # Volume
+            if "Volume" in df_intra.columns:
+                vol_colors = [
+                    "#26a69a" if c >= o else "#ef5350"
+                    for c, o in zip(df_intra["Close"], df_intra["Open"])
+                ]
+                fig.add_trace(go.Bar(
+                    x=df_intra.index, y=df_intra["Volume"],
+                    name="Volume", marker_color=vol_colors,
+                    opacity=0.6, showlegend=False,
+                ), row=2, col=1)
+
+            fig.update_layout(
+                title=f"{selected_name} — Intraday ({intraday_interval}, ~15 min vertraging)",
+                xaxis_rangeslider_visible=False,
+                height=500, template=template,
+                margin=dict(l=10, r=10, t=60, b=10),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Ruwe intraday data
+            with st.expander("📋 Intraday data"):
+                st.dataframe(
+                    df_intra[["Open", "High", "Low", "Close", "Volume"]]
+                    .sort_index(ascending=False),
+                    use_container_width=True,
+                )
+
 
 # ── Tab 1: Technische signalen ───────────────────────────────────────────────
 with tab_signals:
