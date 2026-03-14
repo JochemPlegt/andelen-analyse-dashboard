@@ -217,6 +217,53 @@ def load_intraday(symbol: str, interval: str = "5m"):
 
 
 # ---------------------------------------------------------------------------
+# Helper: overall signaal score (1–10)
+# ---------------------------------------------------------------------------
+
+def _bereken_score(sig: dict, df: pd.DataFrame) -> tuple:
+    """
+    Combineert RSI, MACD, trend, BB-positie en SMA-50 in één score van 1–10.
+    Punten: RSI koopzone +2, RSI oversold +1, RSI overbought -1;
+            MACD bullish +2, bearish -1; golden cross +2, death cross -2;
+            boven BB-mid +1, onder -1; boven SMA-50 +1, onder -1.
+    """
+    punten = 0
+    rsi = sig.get("RSI")
+    if isinstance(rsi, float):
+        if 40 <= rsi <= 65:   punten += 2
+        elif rsi < 30:        punten += 1
+        elif rsi > 70:        punten -= 1
+
+    if sig.get("MACD-signaal") == "bullish":   punten += 2
+    elif sig.get("MACD-signaal") == "bearish": punten -= 1
+
+    trend = sig.get("Trend", "")
+    if "golden" in trend:   punten += 2
+    elif "death" in trend:  punten -= 2
+
+    try:
+        koers = float(df["Close"].iloc[-1])
+        if "BB_mid" in df.columns:
+            bb_mid = float(df["BB_mid"].iloc[-1])
+            if not pd.isna(bb_mid):
+                punten += 1 if koers > bb_mid else -1
+        if "SMA_50" in df.columns:
+            sma50 = float(df["SMA_50"].iloc[-1])
+            punten += 1 if koers > sma50 else -1
+    except Exception:
+        pass
+
+    # Bereik: -5 t/m +8 → normaliseer naar 1–10
+    score = max(1, min(10, round((punten + 5) / 13 * 9 + 1)))
+    if score >= 8:   label = "Sterk Koop"
+    elif score >= 6: label = "Koop"
+    elif score >= 4: label = "Neutraal"
+    elif score >= 2: label = "Verkoop"
+    else:            label = "Sterk Verkoop"
+    return score, label
+
+
+# ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
 tab_live, tab_signals, tab_backtest, tab_overview, tab_screener, tab_uitleg = st.tabs([
@@ -347,7 +394,9 @@ with tab_signals:
             # KPI-metrics
             try:
                 sig = latest_signals(selected_name, df)
-                c1, c2, c3, c4 = st.columns(4)
+                score_val, score_label = _bereken_score(sig, df)
+
+                c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Koers", f"€{sig['Koers']:.2f}")
 
                 rsi_val   = sig["RSI"]
@@ -357,6 +406,11 @@ with tab_signals:
                 c2.metric("RSI", f"{rsi_val}", rsi_label, delta_color=delta_col)
                 c3.metric("MACD", sig["MACD-signaal"].capitalize())
                 c4.metric("Trend", sig["Trend"].split("(")[0].strip())
+
+                score_color = ("normal" if score_val >= 6
+                               else "inverse" if score_val <= 3 else "off")
+                c5.metric("Overall score", f"{score_val}/10", score_label,
+                          delta_color=score_color)
             except Exception:
                 pass
 
@@ -644,6 +698,87 @@ with tab_overview:
             bt_df.style.map(_color_diff, subset=["MA vs B&H", "RSI vs B&H"]),
             use_container_width=True, hide_index=True,
         )
+
+    st.divider()
+
+    # Momentum ranking + 52-weeks hoog/laag
+    st.subheader("🚀 Momentum ranking — koersprestaties")
+    st.caption(
+        "Rendement per tijdsperiode. **Van 52w Hoog** toont hoeveel % de koers "
+        "onder het jaarmaximum staat."
+    )
+
+    momentum_rows = []
+    for name, df_m in all_data.items():
+        try:
+            close = df_m["Close"].squeeze()
+            cur   = float(close.iloc[-1])
+            last_date = close.index[-1]
+
+            def _ret(days, _close=close, _cur=cur, _last=last_date):
+                cutoff = _last - pd.Timedelta(days=days)
+                hist   = _close[_close.index >= cutoff]
+                if len(hist) < 2:
+                    return None
+                return round((_cur / float(hist.iloc[0]) - 1) * 100, 1)
+
+            year_data = close[close.index >= last_date - pd.Timedelta(days=365)]
+            high_52w  = float(year_data.max())
+            low_52w   = float(year_data.min())
+
+            momentum_rows.append({
+                "Aandeel":      name,
+                "Koers":        f"€{cur:.2f}",
+                "1 week %":     _ret(7),
+                "1 maand %":    _ret(30),
+                "3 maanden %":  _ret(90),
+                "6 maanden %":  _ret(182),
+                "52w Hoog":     f"€{high_52w:.2f}",
+                "52w Laag":     f"€{low_52w:.2f}",
+                "Van 52w Hoog": round((cur - high_52w) / high_52w * 100, 1),
+            })
+        except Exception:
+            pass
+
+    if momentum_rows:
+        mom_df = (pd.DataFrame(momentum_rows)
+                  .sort_values("1 maand %", ascending=False, na_position="last")
+                  .reset_index(drop=True))
+
+        pct_cols = ["1 week %", "1 maand %", "3 maanden %", "6 maanden %", "Van 52w Hoog"]
+
+        def _color_pct(val):
+            try:
+                return "color:#26a69a" if float(val) >= 0 else "color:#ef5350"
+            except Exception:
+                return ""
+
+        st.dataframe(
+            mom_df.style.map(_color_pct, subset=pct_cols),
+            use_container_width=True, hide_index=True,
+        )
+
+        # Staafgrafiek 1-maand rendement
+        mom_plot = (mom_df[["Aandeel", "1 maand %"]]
+                    .dropna()
+                    .sort_values("1 maand %"))
+        template_mom = "plotly_dark" if dark_mode else "plotly_white"
+        fig_mom = go.Figure(go.Bar(
+            x=mom_plot["1 maand %"],
+            y=mom_plot["Aandeel"],
+            orientation="h",
+            marker_color=["#26a69a" if v >= 0 else "#ef5350"
+                          for v in mom_plot["1 maand %"]],
+            text=[f"{v:+.1f}%" for v in mom_plot["1 maand %"]],
+            textposition="outside",
+        ))
+        fig_mom.update_layout(
+            title="1-maand rendement per aandeel",
+            height=520, template=template_mom,
+            margin=dict(l=10, r=70, t=50, b=10),
+            xaxis_title="Rendement %",
+        )
+        st.plotly_chart(fig_mom, use_container_width=True)
 
     st.divider()
 
