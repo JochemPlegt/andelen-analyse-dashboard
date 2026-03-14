@@ -18,6 +18,7 @@ from signals import build_summary, latest_signals
 from backtest import run_backtest, run_rsi_backtest, max_drawdown
 from charts import price_chart, rsi_chart, macd_chart, backtest_curve_chart
 from config import TICKERS
+from screener import scan_alle
 
 START_CAPITAL = 10_000
 
@@ -165,6 +166,35 @@ def load_all(period: str):
     return {name: add_indicators(df) for name, df in raw.items()}
 
 
+@st.cache_data(ttl=1800, show_spinner="Nieuws ophalen...")
+def load_nieuws(symbol: str, max_items: int = 8) -> list:
+    """Haalt nieuws op via yfinance. Normaliseert de nieuwe API-structuur."""
+    try:
+        ticker = yf.Ticker(symbol)
+        raw = ticker.news or []
+        items = []
+        for n in raw[:max_items]:
+            # Nieuwe structuur: content is genest in 'content'-key
+            c = n.get("content", n)
+            pub = c.get("provider", {})
+            url_obj = c.get("canonicalUrl") or c.get("clickThroughUrl") or {}
+            pub_date = c.get("pubDate", "")
+            try:
+                ts = int(datetime.strptime(pub_date[:19], "%Y-%m-%dT%H:%M:%S").timestamp())
+            except Exception:
+                ts = 0
+            items.append({
+                "title":               c.get("title", "Geen titel"),
+                "link":                url_obj.get("url", "#"),
+                "publisher":           pub.get("displayName", "") if isinstance(pub, dict) else str(pub),
+                "summary":             c.get("summary", ""),
+                "providerPublishTime": ts,
+            })
+        return items
+    except Exception:
+        return []
+
+
 @st.cache_data(ttl=300, show_spinner="Intraday data ophalen...")  # 5 min cache
 def load_intraday(symbol: str, interval: str = "5m"):
     """
@@ -189,11 +219,12 @@ def load_intraday(symbol: str, interval: str = "5m"):
 # ---------------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------------
-tab_live, tab_signals, tab_backtest, tab_overview, tab_uitleg = st.tabs([
+tab_live, tab_signals, tab_backtest, tab_overview, tab_screener, tab_uitleg = st.tabs([
     "📡 Live koers",
     "📊 Technische signalen",
     "🧪 Backtest",
     "🗂️ Overzicht AEX",
+    "🎯 Strategiematches",
     "📚 Wat betekent dit?",
 ])
 
@@ -329,6 +360,105 @@ with tab_signals:
             except Exception:
                 pass
 
+            # ── Signaaluitleg (contextgebonden) ──────────────────────────────
+            try:
+                rsi_val    = sig["RSI"]
+                macd_sig_v = sig["MACD-signaal"]
+                trend_v    = sig["Trend"]
+                rsi_signal = sig["RSI-signaal"]
+
+                # RSI-tekst
+                if rsi_signal == "OVERBOUGHT":
+                    rsi_kleur = "🔴"
+                    rsi_tekst = (
+                        f"**RSI {rsi_val} — Overbought (>70)**  \n"
+                        "De koers is de afgelopen periode sterk gestegen. "
+                        "Een RSI boven 70 betekent dat het aandeel mogelijk *te snel gestegen* is. "
+                        "Dit hoeft geen crash te betekenen, maar de kans op een correctie neemt toe.  \n"
+                        "💡 *Advies: wacht op een daling of bevestiging voordat je instapt.*"
+                    )
+                elif rsi_signal == "OVERSOLD":
+                    rsi_kleur = "🟢"
+                    rsi_tekst = (
+                        f"**RSI {rsi_val} — Oversold (<30)**  \n"
+                        "De koers is de afgelopen periode sterk gedaald. "
+                        "Een RSI onder 30 kan wijzen op een *overdreven daling* — de koers kan terugveren. "
+                        "Maar een dalende trend kan ook aanhouden.  \n"
+                        "💡 *Advies: mogelijk koopkans, maar wacht op een bevestiging van herstel.*"
+                    )
+                elif isinstance(rsi_val, float) and 40 <= rsi_val <= 65:
+                    rsi_kleur = "🟡"
+                    rsi_tekst = (
+                        f"**RSI {rsi_val} — Momentum koopzone (40–65)**  \n"
+                        "De RSI zit in een gezonde zone: niet overbought, niet oversold. "
+                        "Dit is vaak een gunstig instapgebied voor momentumbeleggers.  \n"
+                        "💡 *Advies: combineer met andere signalen (MACD, trend) voor bevestiging.*"
+                    )
+                else:
+                    rsi_kleur = "⚪"
+                    rsi_tekst = (
+                        f"**RSI {rsi_val} — Neutraal**  \n"
+                        "Geen uitgesproken signaal. De koers beweegt in een normaal tempo.  \n"
+                        "💡 *Advies: wacht op een duidelijker signaal.*"
+                    )
+
+                # MACD-tekst
+                if macd_sig_v == "bullish":
+                    macd_kleur = "🟢"
+                    macd_tekst = (
+                        "**MACD — Bullish**  \n"
+                        "De MACD-lijn staat boven de signaallijn. "
+                        "Dit betekent dat het *kortetermijnmomentum sterker is dan het langetermijngemiddelde* — "
+                        "een teken dat de koers aan kracht wint.  \n"
+                        "💡 *Advies: dit is een positief teken, zeker in combinatie met een golden cross.*"
+                    )
+                elif macd_sig_v == "bearish":
+                    macd_kleur = "🔴"
+                    macd_tekst = (
+                        "**MACD — Bearish**  \n"
+                        "De MACD-lijn staat onder de signaallijn. "
+                        "Het momentum verzwakt — de koers verliest kracht.  \n"
+                        "💡 *Advies: wees voorzichtig met instappen; wacht tot de MACD omslaat naar bullish.*"
+                    )
+                else:
+                    macd_kleur = "⚪"
+                    macd_tekst = "**MACD — Onbekend**  \nOnvoldoende data beschikbaar."
+
+                # Trend-tekst
+                if "golden" in trend_v:
+                    trend_kleur = "🟢"
+                    trend_tekst = (
+                        "**Trend — Golden Cross**  \n"
+                        "De SMA-50 staat boven de SMA-200. "
+                        "Dit is het klassieke *koopsignaal op langere termijn*. "
+                        "De kortetermijntrend is sterker dan de langetermijntrend.  \n"
+                        "💡 *Advies: positieve trend — ondersteunt een koopbeslissing.*"
+                    )
+                elif "death" in trend_v:
+                    trend_kleur = "🔴"
+                    trend_tekst = (
+                        "**Trend — Death Cross**  \n"
+                        "De SMA-50 staat onder de SMA-200. "
+                        "Dit is het klassieke *verkoopsignaal op langere termijn*. "
+                        "De kortetermijntrend is zwakker dan de langetermijntrend.  \n"
+                        "💡 *Advies: wees voorzichtig — de langetermijntrend is bearish.*"
+                    )
+                else:
+                    trend_kleur = "⚪"
+                    trend_tekst = "**Trend — Onbekend**  \nOnvoldoende data beschikbaar."
+
+                st.subheader("🔍 Wat betekenen deze signalen nu?")
+                col_rsi_u, col_macd_u, col_trend_u = st.columns(3)
+                with col_rsi_u:
+                    st.markdown(f"{rsi_kleur} {rsi_tekst}")
+                with col_macd_u:
+                    st.markdown(f"{macd_kleur} {macd_tekst}")
+                with col_trend_u:
+                    st.markdown(f"{trend_kleur} {trend_tekst}")
+
+            except Exception:
+                pass
+
             st.divider()
 
             # Koersgrafiek
@@ -352,6 +482,26 @@ with tab_signals:
                                     "BB_upper", "BB_lower"] if c in df.columns]
                 st.dataframe(df[cols].tail(30).sort_index(ascending=False),
                              use_container_width=True)
+
+            st.divider()
+
+            # Nieuws
+            st.subheader(f"📰 Laatste nieuws — {selected_name}")
+            nieuws = load_nieuws(selected_symbol)
+            if not nieuws:
+                st.info("Geen recent nieuws gevonden.")
+            else:
+                for item in nieuws:
+                    ts = item.get("providerPublishTime", 0)
+                    datum = datetime.fromtimestamp(ts).strftime("%d-%m-%Y %H:%M") if ts else "—"
+                    titel = item.get("title", "Geen titel")
+                    url   = item.get("link", "#")
+                    bron  = item.get("publisher", "")
+                    st.markdown(
+                        f"**[{titel}]({url})**  \n"
+                        f"<span style='color:gray;font-size:0.85em'>{bron} · {datum}</span>",
+                        unsafe_allow_html=True,
+                    )
 
 # ── Tab 2: Backtest ──────────────────────────────────────────────────────────
 with tab_backtest:
@@ -495,7 +645,141 @@ with tab_overview:
             use_container_width=True, hide_index=True,
         )
 
-# ── Tab 4: Uitleg ────────────────────────────────────────────────────────────
+    st.divider()
+
+    # Correlatiematrix
+    st.subheader("🔗 Correlatiematrix — dagrendementen")
+    st.caption(
+        "Waarden dicht bij **+1**: aandelen bewegen gelijktijdig (minder spreiding). "
+        "Waarden dicht bij **0** of **-1**: betere spreiding in je portefeuille."
+    )
+
+    # Bouw een DataFrame van slotkoersen voor alle beschikbare aandelen
+    close_df = pd.DataFrame({
+        name: df["Close"].squeeze()
+        for name, df in all_data.items()
+        if "Close" in df.columns
+    })
+    returns_df = close_df.pct_change().dropna()
+    corr = returns_df.corr().round(2)
+
+    template_corr = "plotly_dark" if dark_mode else "plotly_white"
+    fig_corr = go.Figure(go.Heatmap(
+        z=corr.values,
+        x=corr.columns.tolist(),
+        y=corr.index.tolist(),
+        colorscale="RdBu",
+        zmid=0,
+        zmin=-1, zmax=1,
+        text=corr.values.round(2),
+        texttemplate="%{text}",
+        textfont=dict(size=9),
+        colorbar=dict(title="Correlatie"),
+    ))
+    fig_corr.update_layout(
+        height=600, template=template_corr,
+        margin=dict(l=10, r=10, t=30, b=10),
+        xaxis=dict(tickangle=-45),
+    )
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+
+# ── Tab 4: Strategiematches ──────────────────────────────────────────────────
+with tab_screener:
+    st.title("🎯 Strategiematches — Momentumscanner")
+    st.markdown(
+        "De scanner beoordeelt elk AEX-aandeel op **5 criteria**. "
+        "Aandelen met de hoogste score voldoen aan de meeste voorwaarden voor momentum."
+    )
+
+    with st.expander("ℹ️ Hoe werkt de scanner?", expanded=False):
+        st.markdown("""
+| # | Criterium | Vereiste |
+|---|-----------|---------|
+| 1 | **RSI momentum** | RSI tussen 40–65 (koopzone zonder overbought), of net hersteld van oversold (<30 → >30) |
+| 2 | **Relatief volume** | Huidig volume > 1,5× het 20-daags gemiddelde |
+| 3 | **Nieuws aanwezig** | Minstens 1 nieuwsbericht in de afgelopen 3 dagen |
+| 4 | **MACD bullish** | MACD-lijn staat boven de signaallijn |
+| 5 | **Boven SMA-50** | Slotkoers staat boven het 50-daags voortschrijdend gemiddelde |
+        """)
+
+    st.divider()
+
+    min_score = st.slider("Minimale score om te tonen", min_value=1, max_value=5, value=3)
+
+    with st.spinner("Alle AEX-aandelen analyseren..."):
+        all_data_sc = load_all(period)
+        nieuws_map  = {}
+        progress_sc = st.progress(0)
+        ticker_items = list(TICKERS.items())
+        for i, (name, symbol) in enumerate(ticker_items):
+            nieuws_map[name] = load_nieuws(symbol)
+            progress_sc.progress((i + 1) / len(ticker_items))
+
+        matches = scan_alle(all_data_sc, nieuws_map, TICKERS, min_score=min_score)
+
+    if not matches:
+        st.info(f"Geen aandelen gevonden met score ≥ {min_score}. Verlaag de drempel.")
+    else:
+        st.success(f"**{len(matches)} aandelen** voldoen aan minimaal {min_score}/5 criteria.")
+
+        # ── Overzichtstabel ──
+        tabel_rows = []
+        for r in matches:
+            score = r["Score"]
+            sterren = "⭐" * score + "☆" * (5 - score)
+            tabel_rows.append({
+                "Score": f"{score}/5  {sterren}",
+                "Naam":   r["Naam"],
+                "Ticker": r["Ticker"],
+                "Koers":  f"€{r['Koers']:.2f}",
+                "Gap %":  f"{r['Gap %']:+.2f}%",
+                "Volume": f"{r['Volume']:,}",
+                "RSI":    f"{r['RSI']:.1f}" if r["RSI"] else "—",
+            })
+
+        st.dataframe(pd.DataFrame(tabel_rows), use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        # ── Detail per aandeel ──
+        st.subheader("Detail per aandeel")
+        for r in matches:
+            score = r["Score"]
+            with st.expander(f"**{r['Naam']}** ({r['Ticker']}) — {score}/5 criteria ✓"):
+                col_info, col_check = st.columns([1, 2])
+
+                with col_info:
+                    st.metric("Koers",  f"€{r['Koers']:.2f}")
+                    st.metric("Gap %",  f"{r['Gap %']:+.2f}%")
+                    st.metric("Volume", f"{r['Volume']:,}")
+                    if r["RSI"]:
+                        st.metric("RSI", f"{r['RSI']:.1f}")
+
+                with col_check:
+                    st.markdown("**Criterium-checklist:**")
+                    for criterium, (ok, uitleg) in r["checks"].items():
+                        icoon = "✅" if ok else "❌"
+                        st.markdown(f"{icoon} **{criterium}** — {uitleg}")
+
+                # Laatste nieuws
+                if r.get("nieuws"):
+                    st.markdown("---")
+                    st.markdown("**Recent nieuws:**")
+                    for item in r["nieuws"]:
+                        ts    = item.get("providerPublishTime", 0)
+                        datum = datetime.fromtimestamp(ts).strftime("%d-%m-%Y") if ts else "—"
+                        titel = item.get("title", "Geen titel")
+                        url   = item.get("link", "#")
+                        bron  = item.get("publisher", "")
+                        st.markdown(
+                            f"• **[{titel}]({url})**  "
+                            f"<span style='color:gray;font-size:0.85em'>{bron} · {datum}</span>",
+                            unsafe_allow_html=True,
+                        )
+
+
+# ── Tab 5: Uitleg ────────────────────────────────────────────────────────────
 with tab_uitleg:
     st.title("📚 Wat betekenen deze indicatoren?")
     st.markdown(
