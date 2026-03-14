@@ -108,8 +108,8 @@ with st.sidebar:
 
     st.divider()
 
-    # Aandeel kiezen (voor Technische signalen & Backtest)
-    st.markdown("**Aandeel** *(Signalen & Backtest)*")
+    # Aandeel kiezen
+    st.markdown("**Aandeel**")
     mode = st.radio("Keuze", ["AEX-lijst", "Eigen ticker"], label_visibility="collapsed")
     if mode == "AEX-lijst":
         selected_name   = st.selectbox("Aandeel", list(TICKERS.keys()))
@@ -133,13 +133,55 @@ with st.sidebar:
     show_bb = st.checkbox("Bollinger Bands tonen", value=True)
 
     st.divider()
+
+    # Paginanavigatie
+    st.markdown("**Navigatie**")
+    pagina = st.radio(
+        "Pagina",
+        ["Analyse", "Overzicht AEX", "Strategiematches", "Uitleg"],
+        label_visibility="collapsed",
+    )
+
+    st.divider()
     st.caption(f"Laatste update: {datetime.now().strftime('%d-%m-%Y %H:%M')}")
 
 # CSS voor licht thema override
 if not dark_mode:
     st.markdown("""
     <style>
-    .stApp { background-color: #f8fafc; color: #1e293b; }
+    /* Achtergrond en basistekst */
+    .stApp, .stApp * { color: #1e293b !important; }
+    .stApp { background-color: #f8fafc !important; }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] { background-color: #e2e8f0 !important; }
+    [data-testid="stSidebar"] * { color: #1e293b !important; }
+
+    /* Tabs */
+    [data-testid="stTabs"] button { color: #1e293b !important; }
+    [data-testid="stTabs"] [aria-selected="true"] { color: #0f172a !important; font-weight: 600; }
+
+    /* Metrics */
+    [data-testid="stMetricValue"],
+    [data-testid="stMetricLabel"],
+    [data-testid="stMetricDelta"] { color: #1e293b !important; }
+
+    /* Koppen en tekst */
+    h1, h2, h3, h4, p, span, label, div { color: #1e293b !important; }
+
+    /* Dataframe / tabel */
+    [data-testid="stDataFrame"] * { color: #1e293b !important; background-color: #f1f5f9 !important; }
+
+    /* Input-velden */
+    [data-testid="stTextInput"] input,
+    [data-testid="stSelectbox"] * { color: #1e293b !important; background-color: #e2e8f0 !important; }
+
+    /* Knoppen */
+    [data-testid="stButton"] button { color: #1e293b !important; background-color: #cbd5e1 !important; }
+
+    /* Kaarten / containers */
+    [data-testid="stExpander"] { background-color: #f1f5f9 !important; }
+    [data-testid="stExpander"] * { color: #1e293b !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -265,403 +307,382 @@ def _bereken_score(sig: dict, df: pd.DataFrame) -> tuple:
 
 
 # ---------------------------------------------------------------------------
-# Tabs
+# Paginaweergave
 # ---------------------------------------------------------------------------
-tab_live, tab_signals, tab_backtest, tab_overview, tab_screener, tab_uitleg = st.tabs([
-    "Live koers",
-    "Technische signalen",
-    "Backtest",
-    "Overzicht AEX",
-    "Strategiematches",
-    "Uitleg",
-])
+
+if pagina == "Analyse":
+    tab_live, tab_signals, tab_backtest = st.tabs([
+        "Live koers",
+        "Technische signalen",
+        "Backtest",
+    ])
+else:
+    tab_live = tab_signals = tab_backtest = st.empty()
 
 # ── Tab 0: Live koers ────────────────────────────────────────────────────────
 with tab_live:
-    st.caption("⚠️ Data via Yahoo Finance heeft ~15 minuten vertraging. "
-               "Buiten handelstijd zie je de laatste beschikbare koers.")
+    if pagina == "Analyse":
+        st.title(f"Live koers — {selected_name}")
+        st.caption("⚠️ Data via Yahoo Finance heeft ~15 minuten vertraging. "
+                   "Buiten handelstijd zie je de laatste beschikbare koers.")
+        st.divider()
 
-    # ── Aandeel kiezen (inline, niet in sidebar) ─────────────────────────────
-    live_col_a, live_col_b, live_col_c = st.columns([2, 2, 1])
-    with live_col_a:
-        live_mode = st.radio("Aandeel kiezen", ["AEX-lijst", "Eigen ticker"],
-                             horizontal=True, key="live_mode")
-    with live_col_b:
-        if live_mode == "AEX-lijst":
-            live_name   = st.selectbox("Aandeel", list(TICKERS.keys()), key="live_name")
-            live_symbol = TICKERS[live_name]
+        if not selected_symbol:
+            st.info("Kies een aandeel in de sidebar.")
         else:
-            live_custom = st.text_input(
-                "Yahoo Finance ticker",
-                placeholder="bijv. ADYEN.AS, NVDA, AAPL",
-                key="live_custom",
-            ).strip().upper()
-            live_name   = live_custom or "—"
-            live_symbol = live_custom
-    with live_col_c:
-        st.write("")
-        st.write("")
-        if st.button("🔄 Verversen", key="live_refresh"):
-            st.cache_data.clear()
-            st.rerun()
-
-    st.title(f"📡 Live koers — {live_name}")
-    st.divider()
-
-    if not live_symbol:
-        st.info("Kies een aandeel hierboven.")
-    else:
-        # Interval-keuze
-        intraday_interval = st.radio(
-            "Interval",
-            ["1m", "5m", "15m", "1h"],
-            index=1,
-            horizontal=True,
-            captions=["1 min (vandaag)", "5 min (vandaag)",
-                      "15 min (vandaag)", "1 uur (5 dagen)"],
-        )
-
-        df_intra = load_intraday(live_symbol, intraday_interval)
-
-        if df_intra is None or df_intra.empty:
-            st.warning("Geen intraday data beschikbaar. "
-                       "De markt is mogelijk gesloten of de ticker is onbekend.")
-        else:
-            # KPI's
-            last      = df_intra.iloc[-1]
-            first     = df_intra.iloc[0]
-            cur_price = float(last["Close"])
-            day_open  = float(first["Open"])
-            day_high  = float(df_intra["High"].max())
-            day_low   = float(df_intra["Low"].min())
-            change    = cur_price - day_open
-            change_pct = (change / day_open) * 100
-
-            k1, k2, k3, k4, k5 = st.columns(5)
-            k1.metric("Huidige koers",  f"€{cur_price:.2f}",
-                      f"{change:+.2f} ({change_pct:+.2f}%)",
-                      delta_color="normal" if change >= 0 else "inverse")
-            k2.metric("Daghoog",  f"€{day_high:.2f}")
-            k3.metric("Daglaag",  f"€{day_low:.2f}")
-            k4.metric("Opening",  f"€{day_open:.2f}")
-            k5.metric("Laatste update",
-                      df_intra.index[-1].strftime("%H:%M"),
-                      "~15 min vertraging", delta_color="off")
-
-            st.divider()
-
-            # Intraday candlestick grafiek
-            template = "plotly_dark" if dark_mode else "plotly_white"
-            fig = make_subplots(
-                rows=2, cols=1, shared_xaxes=True,
-                row_heights=[0.75, 0.25], vertical_spacing=0.02,
+            # Interval-keuze
+            intraday_interval = st.radio(
+                "Interval",
+                ["1m", "5m", "15m", "1h"],
+                index=1,
+                horizontal=True,
+                captions=["1 min (vandaag)", "5 min (vandaag)",
+                          "15 min (vandaag)", "1 uur (5 dagen)"],
             )
-            fig.add_trace(go.Candlestick(
-                x=df_intra.index,
-                open=df_intra["Open"], high=df_intra["High"],
-                low=df_intra["Low"],   close=df_intra["Close"],
-                name="Koers",
-                increasing_line_color="#26a69a",
-                decreasing_line_color="#ef5350",
-            ), row=1, col=1)
 
-            # Daggemiddelde lijn
-            avg = df_intra["Close"].mean()
-            fig.add_hline(y=avg, line_dash="dot", line_color="#f59e0b",
-                          annotation_text=f"Gem. €{avg:.2f}", row=1, col=1)
+            df_intra = load_intraday(selected_symbol, intraday_interval)
 
-            # Volume
-            if "Volume" in df_intra.columns:
-                vol_colors = [
-                    "#26a69a" if c >= o else "#ef5350"
-                    for c, o in zip(df_intra["Close"], df_intra["Open"])
-                ]
-                fig.add_trace(go.Bar(
-                    x=df_intra.index, y=df_intra["Volume"],
-                    name="Volume", marker_color=vol_colors,
-                    opacity=0.6, showlegend=False,
-                ), row=2, col=1)
+            if df_intra is None or df_intra.empty:
+                st.warning("Geen intraday data beschikbaar. "
+                           "De markt is mogelijk gesloten of de ticker is onbekend.")
+            else:
+                # KPI's
+                last      = df_intra.iloc[-1]
+                first     = df_intra.iloc[0]
+                cur_price = float(last["Close"])
+                day_open  = float(first["Open"])
+                day_high  = float(df_intra["High"].max())
+                day_low   = float(df_intra["Low"].min())
+                change    = cur_price - day_open
+                change_pct = (change / day_open) * 100
 
-            fig.update_layout(
-                title=f"{live_name} — Intraday ({intraday_interval}, ~15 min vertraging)",
-                xaxis_rangeslider_visible=False,
-                height=500, template=template,
-                margin=dict(l=10, r=10, t=60, b=10),
-            )
-            st.plotly_chart(fig, use_container_width=True)
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Huidige koers",  f"€{cur_price:.2f}",
+                          f"{change:+.2f} ({change_pct:+.2f}%)",
+                          delta_color="normal" if change >= 0 else "inverse")
+                k2.metric("Daghoog",  f"€{day_high:.2f}")
+                k3.metric("Daglaag",  f"€{day_low:.2f}")
+                k4.metric("Opening",  f"€{day_open:.2f}")
+                k5.metric("Laatste update",
+                          df_intra.index[-1].strftime("%H:%M"),
+                          "~15 min vertraging", delta_color="off")
 
-            # Ruwe intraday data
-            with st.expander("📋 Intraday data"):
-                st.dataframe(
-                    df_intra[["Open", "High", "Low", "Close", "Volume"]]
-                    .sort_index(ascending=False),
-                    use_container_width=True,
+                st.divider()
+
+                # Intraday candlestick grafiek
+                template = "plotly_dark" if dark_mode else "plotly_white"
+                fig = make_subplots(
+                    rows=2, cols=1, shared_xaxes=True,
+                    row_heights=[0.75, 0.25], vertical_spacing=0.02,
                 )
+                fig.add_trace(go.Candlestick(
+                    x=df_intra.index,
+                    open=df_intra["Open"], high=df_intra["High"],
+                    low=df_intra["Low"],   close=df_intra["Close"],
+                    name="Koers",
+                    increasing_line_color="#26a69a",
+                    decreasing_line_color="#ef5350",
+                ), row=1, col=1)
+
+                # Daggemiddelde lijn
+                avg = df_intra["Close"].mean()
+                fig.add_hline(y=avg, line_dash="dot", line_color="#f59e0b",
+                              annotation_text=f"Gem. €{avg:.2f}", row=1, col=1)
+
+                # Volume
+                if "Volume" in df_intra.columns:
+                    vol_colors = [
+                        "#26a69a" if c >= o else "#ef5350"
+                        for c, o in zip(df_intra["Close"], df_intra["Open"])
+                    ]
+                    fig.add_trace(go.Bar(
+                        x=df_intra.index, y=df_intra["Volume"],
+                        name="Volume", marker_color=vol_colors,
+                        opacity=0.6, showlegend=False,
+                    ), row=2, col=1)
+
+                fig.update_layout(
+                    title=f"{selected_name} — Intraday ({intraday_interval}, ~15 min vertraging)",
+                    xaxis_rangeslider_visible=False,
+                    height=500, template=template,
+                    margin=dict(l=10, r=10, t=60, b=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Ruwe intraday data
+                with st.expander("📋 Intraday data"):
+                    st.dataframe(
+                        df_intra[["Open", "High", "Low", "Close", "Volume"]]
+                        .sort_index(ascending=False),
+                        use_container_width=True,
+                    )
 
 
 # ── Tab 1: Technische signalen ───────────────────────────────────────────────
 with tab_signals:
-    st.title(f"📈 {selected_name}")
+    if pagina == "Analyse":
+        st.title(f"📈 {selected_name}")
 
-    if not selected_symbol:
-        st.info("Voer een ticker in via de sidebar.")
-    else:
-        df = load_ticker(selected_symbol, period)
-
-        if df is None:
-            st.error(f"Geen data gevonden voor **{selected_symbol}**.")
+        if not selected_symbol:
+            st.info("Voer een ticker in via de sidebar.")
         else:
-            # KPI-metrics
-            try:
-                sig = latest_signals(selected_name, df)
-                score_val, score_label = _bereken_score(sig, df)
+            df = load_ticker(selected_symbol, period)
 
-                c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("Koers", f"€{sig['Koers']:.2f}")
-
-                rsi_val   = sig["RSI"]
-                rsi_label = sig["RSI-signaal"].upper()
-                delta_col = ("inverse" if rsi_label == "OVERBOUGHT"
-                             else "normal" if rsi_label == "OVERSOLD" else "off")
-                c2.metric("RSI", f"{rsi_val}", rsi_label, delta_color=delta_col)
-                c3.metric("MACD", sig["MACD-signaal"].capitalize())
-                c4.metric("Trend", sig["Trend"].split("(")[0].strip())
-
-                score_color = ("normal" if score_val >= 6
-                               else "inverse" if score_val <= 3 else "off")
-                c5.metric("Overall score", f"{score_val}/10", score_label,
-                          delta_color=score_color)
-            except Exception:
-                pass
-
-            # ── Signaaluitleg (contextgebonden) ──────────────────────────────
-            try:
-                rsi_val    = sig["RSI"]
-                macd_sig_v = sig["MACD-signaal"]
-                trend_v    = sig["Trend"]
-                rsi_signal = sig["RSI-signaal"]
-
-                # RSI-tekst
-                if rsi_signal == "OVERBOUGHT":
-                    rsi_kleur = "🔴"
-                    rsi_tekst = (
-                        f"**RSI {rsi_val} — Overbought (>70)**  \n"
-                        "De koers is de afgelopen periode sterk gestegen. "
-                        "Een RSI boven 70 betekent dat het aandeel mogelijk *te snel gestegen* is. "
-                        "Dit hoeft geen crash te betekenen, maar de kans op een correctie neemt toe.  \n"
-                        "💡 *Advies: wacht op een daling of bevestiging voordat je instapt.*"
-                    )
-                elif rsi_signal == "OVERSOLD":
-                    rsi_kleur = "🟢"
-                    rsi_tekst = (
-                        f"**RSI {rsi_val} — Oversold (<30)**  \n"
-                        "De koers is de afgelopen periode sterk gedaald. "
-                        "Een RSI onder 30 kan wijzen op een *overdreven daling* — de koers kan terugveren. "
-                        "Maar een dalende trend kan ook aanhouden.  \n"
-                        "💡 *Advies: mogelijk koopkans, maar wacht op een bevestiging van herstel.*"
-                    )
-                elif isinstance(rsi_val, float) and 40 <= rsi_val <= 65:
-                    rsi_kleur = "🟡"
-                    rsi_tekst = (
-                        f"**RSI {rsi_val} — Momentum koopzone (40–65)**  \n"
-                        "De RSI zit in een gezonde zone: niet overbought, niet oversold. "
-                        "Dit is vaak een gunstig instapgebied voor momentumbeleggers.  \n"
-                        "💡 *Advies: combineer met andere signalen (MACD, trend) voor bevestiging.*"
-                    )
-                else:
-                    rsi_kleur = "⚪"
-                    rsi_tekst = (
-                        f"**RSI {rsi_val} — Neutraal**  \n"
-                        "Geen uitgesproken signaal. De koers beweegt in een normaal tempo.  \n"
-                        "💡 *Advies: wacht op een duidelijker signaal.*"
-                    )
-
-                # MACD-tekst
-                if macd_sig_v == "bullish":
-                    macd_kleur = "🟢"
-                    macd_tekst = (
-                        "**MACD — Bullish**  \n"
-                        "De MACD-lijn staat boven de signaallijn. "
-                        "Dit betekent dat het *kortetermijnmomentum sterker is dan het langetermijngemiddelde* — "
-                        "een teken dat de koers aan kracht wint.  \n"
-                        "💡 *Advies: dit is een positief teken, zeker in combinatie met een golden cross.*"
-                    )
-                elif macd_sig_v == "bearish":
-                    macd_kleur = "🔴"
-                    macd_tekst = (
-                        "**MACD — Bearish**  \n"
-                        "De MACD-lijn staat onder de signaallijn. "
-                        "Het momentum verzwakt — de koers verliest kracht.  \n"
-                        "💡 *Advies: wees voorzichtig met instappen; wacht tot de MACD omslaat naar bullish.*"
-                    )
-                else:
-                    macd_kleur = "⚪"
-                    macd_tekst = "**MACD — Onbekend**  \nOnvoldoende data beschikbaar."
-
-                # Trend-tekst
-                if "golden" in trend_v:
-                    trend_kleur = "🟢"
-                    trend_tekst = (
-                        "**Trend — Golden Cross**  \n"
-                        "De SMA-50 staat boven de SMA-200. "
-                        "Dit is het klassieke *koopsignaal op langere termijn*. "
-                        "De kortetermijntrend is sterker dan de langetermijntrend.  \n"
-                        "💡 *Advies: positieve trend — ondersteunt een koopbeslissing.*"
-                    )
-                elif "death" in trend_v:
-                    trend_kleur = "🔴"
-                    trend_tekst = (
-                        "**Trend — Death Cross**  \n"
-                        "De SMA-50 staat onder de SMA-200. "
-                        "Dit is het klassieke *verkoopsignaal op langere termijn*. "
-                        "De kortetermijntrend is zwakker dan de langetermijntrend.  \n"
-                        "💡 *Advies: wees voorzichtig — de langetermijntrend is bearish.*"
-                    )
-                else:
-                    trend_kleur = "⚪"
-                    trend_tekst = "**Trend — Onbekend**  \nOnvoldoende data beschikbaar."
-
-                st.subheader("🔍 Wat betekenen deze signalen nu?")
-                col_rsi_u, col_macd_u, col_trend_u = st.columns(3)
-                with col_rsi_u:
-                    st.markdown(f"{rsi_kleur} {rsi_tekst}")
-                with col_macd_u:
-                    st.markdown(f"{macd_kleur} {macd_tekst}")
-                with col_trend_u:
-                    st.markdown(f"{trend_kleur} {trend_tekst}")
-
-            except Exception:
-                pass
-
-            st.divider()
-
-            # Koersgrafiek
-            st.plotly_chart(
-                price_chart(df, selected_name, show_bb=show_bb, dark=dark_mode),
-                use_container_width=True,
-            )
-
-            # RSI + MACD naast elkaar
-            col_rsi, col_macd = st.columns(2)
-            with col_rsi:
-                st.plotly_chart(rsi_chart(df, selected_name, dark=dark_mode),
-                                use_container_width=True)
-            with col_macd:
-                st.plotly_chart(macd_chart(df, selected_name, dark=dark_mode),
-                                use_container_width=True)
-
-            with st.expander("📋 Ruwe data (laatste 30 dagen)"):
-                cols = [c for c in ["Close", "Volume", "RSI_14", "MACD",
-                                    "MACD_signal", "SMA_50", "SMA_200",
-                                    "BB_upper", "BB_lower"] if c in df.columns]
-                st.dataframe(df[cols].tail(30).sort_index(ascending=False),
-                             use_container_width=True)
-
-            st.divider()
-
-            # Nieuws
-            st.subheader(f"📰 Laatste nieuws — {selected_name}")
-            nieuws = load_nieuws(selected_symbol)
-            if not nieuws:
-                st.info("Geen recent nieuws gevonden.")
+            if df is None:
+                st.error(f"Geen data gevonden voor **{selected_symbol}**.")
             else:
-                for item in nieuws:
-                    ts = item.get("providerPublishTime", 0)
-                    datum = datetime.fromtimestamp(ts).strftime("%d-%m-%Y %H:%M") if ts else "—"
-                    titel = item.get("title", "Geen titel")
-                    url   = item.get("link", "#")
-                    bron  = item.get("publisher", "")
-                    st.markdown(
-                        f"**[{titel}]({url})**  \n"
-                        f"<span style='color:gray;font-size:0.85em'>{bron} · {datum}</span>",
-                        unsafe_allow_html=True,
-                    )
+                # KPI-metrics
+                try:
+                    sig = latest_signals(selected_name, df)
+                    score_val, score_label = _bereken_score(sig, df)
 
-# ── Tab 2: Backtest ──────────────────────────────────────────────────────────
-with tab_backtest:
-    st.title(f"🧪 Backtest — {selected_name}")
+                    c1, c2, c3, c4, c5 = st.columns(5)
+                    c1.metric("Koers", f"€{sig['Koers']:.2f}")
 
-    if not selected_symbol:
-        st.info("Voer een ticker in via de sidebar.")
-    else:
-        df = load_ticker(selected_symbol, period)
+                    rsi_val   = sig["RSI"]
+                    rsi_label = sig["RSI-signaal"].upper()
+                    delta_col = ("inverse" if rsi_label == "OVERBOUGHT"
+                                 else "normal" if rsi_label == "OVERSOLD" else "off")
+                    c2.metric("RSI", f"{rsi_val}", rsi_label, delta_color=delta_col)
+                    c3.metric("MACD", sig["MACD-signaal"].capitalize())
+                    c4.metric("Trend", sig["Trend"].split("(")[0].strip())
 
-        if df is None:
-            st.error(f"Geen data voor **{selected_symbol}**.")
-        else:
-            try:
-                r_ma  = run_backtest(selected_name, df, START_CAPITAL)
-                r_rsi = run_rsi_backtest(selected_name, df, START_CAPITAL)
+                    score_color = ("normal" if score_val >= 6
+                                   else "inverse" if score_val <= 3 else "off")
+                    c5.metric("Overall score", f"{score_val}/10", score_label,
+                              delta_color=score_color)
+                except Exception:
+                    pass
 
-                # --- KPI-vergelijking ---
-                st.subheader("Strategie vergelijking")
-                kpi_cols = st.columns(3)
-                for col, result, label in zip(
-                    kpi_cols,
-                    [r_ma, r_rsi],
-                    ["MA Crossover", "RSI Strategie"],
-                ):
-                    s = result["summary"]
-                    with col:
-                        st.markdown(f"**{label}**")
-                        st.metric("Rendement", f"{s['Rendement strategie %']:+.1f}%",
-                                  f"{s['Rendement strategie %'] - s['Rendement buy-hold %']:+.1f}% vs B&H")
-                        st.metric("Max Drawdown", f"{s['Max drawdown %']:.1f}%")
-                        st.metric("Win-ratio",
-                                  f"{s['Win-ratio %']}%" if s["Win-ratio %"] else "—")
-                        st.metric("Trades", s["Aantal trades"])
+                # ── Signaaluitleg (contextgebonden) ──────────────────────────────
+                try:
+                    rsi_val    = sig["RSI"]
+                    macd_sig_v = sig["MACD-signaal"]
+                    trend_v    = sig["Trend"]
+                    rsi_signal = sig["RSI-signaal"]
 
-                with kpi_cols[2]:
-                    st.markdown("**Buy & Hold**")
-                    st.metric("Rendement", f"{r_ma['summary']['Rendement buy-hold %']:+.1f}%")
-                    st.metric("Max Drawdown", f"{max_drawdown(r_ma['curve_buyhold']):.1f}%")
+                    # RSI-tekst
+                    if rsi_signal == "OVERBOUGHT":
+                        rsi_kleur = "🔴"
+                        rsi_tekst = (
+                            f"**RSI {rsi_val} — Overbought (>70)**  \n"
+                            "De koers is de afgelopen periode sterk gestegen. "
+                            "Een RSI boven 70 betekent dat het aandeel mogelijk *te snel gestegen* is. "
+                            "Dit hoeft geen crash te betekenen, maar de kans op een correctie neemt toe.  \n"
+                            "💡 *Advies: wacht op een daling of bevestiging voordat je instapt.*"
+                        )
+                    elif rsi_signal == "OVERSOLD":
+                        rsi_kleur = "🟢"
+                        rsi_tekst = (
+                            f"**RSI {rsi_val} — Oversold (<30)**  \n"
+                            "De koers is de afgelopen periode sterk gedaald. "
+                            "Een RSI onder 30 kan wijzen op een *overdreven daling* — de koers kan terugveren. "
+                            "Maar een dalende trend kan ook aanhouden.  \n"
+                            "💡 *Advies: mogelijk koopkans, maar wacht op een bevestiging van herstel.*"
+                        )
+                    elif isinstance(rsi_val, float) and 40 <= rsi_val <= 65:
+                        rsi_kleur = "🟡"
+                        rsi_tekst = (
+                            f"**RSI {rsi_val} — Momentum koopzone (40–65)**  \n"
+                            "De RSI zit in een gezonde zone: niet overbought, niet oversold. "
+                            "Dit is vaak een gunstig instapgebied voor momentumbeleggers.  \n"
+                            "💡 *Advies: combineer met andere signalen (MACD, trend) voor bevestiging.*"
+                        )
+                    else:
+                        rsi_kleur = "⚪"
+                        rsi_tekst = (
+                            f"**RSI {rsi_val} — Neutraal**  \n"
+                            "Geen uitgesproken signaal. De koers beweegt in een normaal tempo.  \n"
+                            "💡 *Advies: wacht op een duidelijker signaal.*"
+                        )
+
+                    # MACD-tekst
+                    if macd_sig_v == "bullish":
+                        macd_kleur = "🟢"
+                        macd_tekst = (
+                            "**MACD — Bullish**  \n"
+                            "De MACD-lijn staat boven de signaallijn. "
+                            "Dit betekent dat het *kortetermijnmomentum sterker is dan het langetermijngemiddelde* — "
+                            "een teken dat de koers aan kracht wint.  \n"
+                            "💡 *Advies: dit is een positief teken, zeker in combinatie met een golden cross.*"
+                        )
+                    elif macd_sig_v == "bearish":
+                        macd_kleur = "🔴"
+                        macd_tekst = (
+                            "**MACD — Bearish**  \n"
+                            "De MACD-lijn staat onder de signaallijn. "
+                            "Het momentum verzwakt — de koers verliest kracht.  \n"
+                            "💡 *Advies: wees voorzichtig met instappen; wacht tot de MACD omslaat naar bullish.*"
+                        )
+                    else:
+                        macd_kleur = "⚪"
+                        macd_tekst = "**MACD — Onbekend**  \nOnvoldoende data beschikbaar."
+
+                    # Trend-tekst
+                    if "golden" in trend_v:
+                        trend_kleur = "🟢"
+                        trend_tekst = (
+                            "**Trend — Golden Cross**  \n"
+                            "De SMA-50 staat boven de SMA-200. "
+                            "Dit is het klassieke *koopsignaal op langere termijn*. "
+                            "De kortetermijntrend is sterker dan de langetermijntrend.  \n"
+                            "💡 *Advies: positieve trend — ondersteunt een koopbeslissing.*"
+                        )
+                    elif "death" in trend_v:
+                        trend_kleur = "🔴"
+                        trend_tekst = (
+                            "**Trend — Death Cross**  \n"
+                            "De SMA-50 staat onder de SMA-200. "
+                            "Dit is het klassieke *verkoopsignaal op langere termijn*. "
+                            "De kortetermijntrend is zwakker dan de langetermijntrend.  \n"
+                            "💡 *Advies: wees voorzichtig — de langetermijntrend is bearish.*"
+                        )
+                    else:
+                        trend_kleur = "⚪"
+                        trend_tekst = "**Trend — Onbekend**  \nOnvoldoende data beschikbaar."
+
+                    st.subheader("🔍 Wat betekenen deze signalen nu?")
+                    col_rsi_u, col_macd_u, col_trend_u = st.columns(3)
+                    with col_rsi_u:
+                        st.markdown(f"{rsi_kleur} {rsi_tekst}")
+                    with col_macd_u:
+                        st.markdown(f"{macd_kleur} {macd_tekst}")
+                    with col_trend_u:
+                        st.markdown(f"{trend_kleur} {trend_tekst}")
+
+                except Exception:
+                    pass
 
                 st.divider()
 
-                # --- Portfolio-curve grafiek ---
-                curve_data = [
-                    {"label": "MA Crossover",  "curve": r_ma["curve_strategy"],
-                     "color": "#38bdf8", "dash": "solid"},
-                    {"label": "RSI Strategie", "curve": r_rsi["curve_strategy"],
-                     "color": "#f59e0b", "dash": "solid"},
-                    {"label": "Buy & Hold",    "curve": r_ma["curve_buyhold"],
-                     "color": "#9ca3af", "dash": "dot"},
-                ]
+                # Koersgrafiek
                 st.plotly_chart(
-                    backtest_curve_chart(curve_data, selected_name,
-                                         START_CAPITAL, dark=dark_mode),
+                    price_chart(df, selected_name, show_bb=show_bb, dark=dark_mode),
                     use_container_width=True,
                 )
 
-                # --- Trade-tabellen ---
-                col_ma, col_rsi_t = st.columns(2)
-                for col, result, label in [
-                    (col_ma, r_ma, "MA Crossover trades"),
-                    (col_rsi_t, r_rsi, "RSI Strategie trades"),
-                ]:
-                    with col:
-                        st.subheader(label)
-                        trades = result["trades"]
-                        if not trades.empty:
-                            show_cols = [c for c in
-                                ["entry_date", "exit_date", "entry_price",
-                                 "exit_price", "return_pct", "result"]
-                                if c in trades.columns]
-                            def _color(val):
-                                return ("color: #26a69a" if val == "win"
-                                        else "color: #ef5350" if val == "loss" else "")
-                            st.dataframe(
-                                trades[show_cols].style.map(_color, subset=["result"]),
-                                use_container_width=True,
-                            )
-                        else:
-                            st.info("Geen trades in deze periode.")
+                # RSI + MACD naast elkaar
+                col_rsi, col_macd = st.columns(2)
+                with col_rsi:
+                    st.plotly_chart(rsi_chart(df, selected_name, dark=dark_mode),
+                                    use_container_width=True)
+                with col_macd:
+                    st.plotly_chart(macd_chart(df, selected_name, dark=dark_mode),
+                                    use_container_width=True)
 
-            except Exception as exc:
-                st.warning(f"Backtest niet mogelijk: {exc}")
+                with st.expander("📋 Ruwe data (laatste 30 dagen)"):
+                    cols = [c for c in ["Close", "Volume", "RSI_14", "MACD",
+                                        "MACD_signal", "SMA_50", "SMA_200",
+                                        "BB_upper", "BB_lower"] if c in df.columns]
+                    st.dataframe(df[cols].tail(30).sort_index(ascending=False),
+                                 use_container_width=True)
 
-# ── Tab 3: Overzicht AEX ─────────────────────────────────────────────────────
-with tab_overview:
+                st.divider()
+
+                # Nieuws
+                st.subheader(f"📰 Laatste nieuws — {selected_name}")
+                nieuws = load_nieuws(selected_symbol)
+                if not nieuws:
+                    st.info("Geen recent nieuws gevonden.")
+                else:
+                    for item in nieuws:
+                        ts = item.get("providerPublishTime", 0)
+                        datum = datetime.fromtimestamp(ts).strftime("%d-%m-%Y %H:%M") if ts else "—"
+                        titel = item.get("title", "Geen titel")
+                        url   = item.get("link", "#")
+                        bron  = item.get("publisher", "")
+                        st.markdown(
+                            f"**[{titel}]({url})**  \n"
+                            f"<span style='color:gray;font-size:0.85em'>{bron} · {datum}</span>",
+                            unsafe_allow_html=True,
+                        )
+
+# ── Tab 2: Backtest ──────────────────────────────────────────────────────────
+with tab_backtest:
+    if pagina == "Analyse":
+        st.title(f"🧪 Backtest — {selected_name}")
+
+        if not selected_symbol:
+            st.info("Voer een ticker in via de sidebar.")
+        else:
+            df = load_ticker(selected_symbol, period)
+
+            if df is None:
+                st.error(f"Geen data voor **{selected_symbol}**.")
+            else:
+                try:
+                    r_ma  = run_backtest(selected_name, df, START_CAPITAL)
+                    r_rsi = run_rsi_backtest(selected_name, df, START_CAPITAL)
+
+                    # --- KPI-vergelijking ---
+                    st.subheader("Strategie vergelijking")
+                    kpi_cols = st.columns(3)
+                    for col, result, label in zip(
+                        kpi_cols,
+                        [r_ma, r_rsi],
+                        ["MA Crossover", "RSI Strategie"],
+                    ):
+                        s = result["summary"]
+                        with col:
+                            st.markdown(f"**{label}**")
+                            st.metric("Rendement", f"{s['Rendement strategie %']:+.1f}%",
+                                      f"{s['Rendement strategie %'] - s['Rendement buy-hold %']:+.1f}% vs B&H")
+                            st.metric("Max Drawdown", f"{s['Max drawdown %']:.1f}%")
+                            st.metric("Win-ratio",
+                                      f"{s['Win-ratio %']}%" if s["Win-ratio %"] else "—")
+                            st.metric("Trades", s["Aantal trades"])
+
+                    with kpi_cols[2]:
+                        st.markdown("**Buy & Hold**")
+                        st.metric("Rendement", f"{r_ma['summary']['Rendement buy-hold %']:+.1f}%")
+                        st.metric("Max Drawdown", f"{max_drawdown(r_ma['curve_buyhold']):.1f}%")
+
+                    st.divider()
+
+                    # --- Portfolio-curve grafiek ---
+                    curve_data = [
+                        {"label": "MA Crossover",  "curve": r_ma["curve_strategy"],
+                         "color": "#38bdf8", "dash": "solid"},
+                        {"label": "RSI Strategie", "curve": r_rsi["curve_strategy"],
+                         "color": "#f59e0b", "dash": "solid"},
+                        {"label": "Buy & Hold",    "curve": r_ma["curve_buyhold"],
+                         "color": "#9ca3af", "dash": "dot"},
+                    ]
+                    st.plotly_chart(
+                        backtest_curve_chart(curve_data, selected_name,
+                                             START_CAPITAL, dark=dark_mode),
+                        use_container_width=True,
+                    )
+
+                    # --- Trade-tabellen ---
+                    col_ma, col_rsi_t = st.columns(2)
+                    for col, result, label in [
+                        (col_ma, r_ma, "MA Crossover trades"),
+                        (col_rsi_t, r_rsi, "RSI Strategie trades"),
+                    ]:
+                        with col:
+                            st.subheader(label)
+                            trades = result["trades"]
+                            if not trades.empty:
+                                show_cols = [c for c in
+                                    ["entry_date", "exit_date", "entry_price",
+                                     "exit_price", "return_pct", "result"]
+                                    if c in trades.columns]
+                                def _color(val):
+                                    return ("color: #26a69a" if val == "win"
+                                            else "color: #ef5350" if val == "loss" else "")
+                                st.dataframe(
+                                    trades[show_cols].style.map(_color, subset=["result"]),
+                                    use_container_width=True,
+                                )
+                            else:
+                                st.info("Geen trades in deze periode.")
+
+                except Exception as exc:
+                    st.warning(f"Backtest niet mogelijk: {exc}")
+
+# ── Overzicht AEX ─────────────────────────────────────────────────────────────
+if pagina == "Overzicht AEX":
     st.title("🗂️ AEX-25 Overzicht")
 
     with st.spinner("Alle aandelen laden (dit duurt ~30 seconden)..."):
@@ -839,8 +860,8 @@ with tab_overview:
     st.plotly_chart(fig_corr, use_container_width=True)
 
 
-# ── Tab 4: Strategiematches ──────────────────────────────────────────────────
-with tab_screener:
+# ── Strategiematches ──────────────────────────────────────────────────────────
+if pagina == "Strategiematches":
     st.title("🎯 Strategiematches — Momentumscanner")
     st.markdown(
         "De scanner beoordeelt elk AEX-aandeel op **5 criteria**. "
@@ -934,8 +955,8 @@ with tab_screener:
                         )
 
 
-# ── Tab 5: Uitleg ────────────────────────────────────────────────────────────
-with tab_uitleg:
+# ── Uitleg ────────────────────────────────────────────────────────────────────
+if pagina == "Uitleg":
     st.title("📚 Wat betekenen deze indicatoren?")
     st.markdown(
         "Als je net begint met aandelen handelen, kunnen technische indicatoren "
