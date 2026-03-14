@@ -108,8 +108,9 @@ with st.sidebar:
 
     st.divider()
 
-    # Aandeel kiezen
-    mode = st.radio("Aandeel kiezen", ["AEX-lijst", "Eigen ticker"])
+    # Aandeel kiezen (voor Technische signalen & Backtest)
+    st.markdown("**Aandeel** *(Signalen & Backtest)*")
+    mode = st.radio("Keuze", ["AEX-lijst", "Eigen ticker"], label_visibility="collapsed")
     if mode == "AEX-lijst":
         selected_name   = st.selectbox("Aandeel", list(TICKERS.keys()))
         selected_symbol = TICKERS[selected_name]
@@ -267,41 +268,60 @@ def _bereken_score(sig: dict, df: pd.DataFrame) -> tuple:
 # Tabs
 # ---------------------------------------------------------------------------
 tab_live, tab_signals, tab_backtest, tab_overview, tab_screener, tab_uitleg = st.tabs([
-    "📡 Live koers",
-    "📊 Technische signalen",
-    "🧪 Backtest",
-    "🗂️ Overzicht AEX",
-    "🎯 Strategiematches",
-    "📚 Wat betekent dit?",
+    "Live koers",
+    "Technische signalen",
+    "Backtest",
+    "Overzicht AEX",
+    "Strategiematches",
+    "Uitleg",
 ])
 
 # ── Tab 0: Live koers ────────────────────────────────────────────────────────
 with tab_live:
-    st.title(f"📡 Live koers — {selected_name}")
     st.caption("⚠️ Data via Yahoo Finance heeft ~15 minuten vertraging. "
                "Buiten handelstijd zie je de laatste beschikbare koers.")
 
-    if not selected_symbol:
-        st.info("Voer een ticker in via de sidebar.")
+    # ── Aandeel kiezen (inline, niet in sidebar) ─────────────────────────────
+    live_col_a, live_col_b, live_col_c = st.columns([2, 2, 1])
+    with live_col_a:
+        live_mode = st.radio("Aandeel kiezen", ["AEX-lijst", "Eigen ticker"],
+                             horizontal=True, key="live_mode")
+    with live_col_b:
+        if live_mode == "AEX-lijst":
+            live_name   = st.selectbox("Aandeel", list(TICKERS.keys()), key="live_name")
+            live_symbol = TICKERS[live_name]
+        else:
+            live_custom = st.text_input(
+                "Yahoo Finance ticker",
+                placeholder="bijv. ADYEN.AS, NVDA, AAPL",
+                key="live_custom",
+            ).strip().upper()
+            live_name   = live_custom or "—"
+            live_symbol = live_custom
+    with live_col_c:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Verversen", key="live_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+
+    st.title(f"📡 Live koers — {live_name}")
+    st.divider()
+
+    if not live_symbol:
+        st.info("Kies een aandeel hierboven.")
     else:
         # Interval-keuze
-        col_int, col_ref = st.columns([3, 1])
-        with col_int:
-            intraday_interval = st.radio(
-                "Interval",
-                ["1m", "5m", "15m", "1h"],
-                index=1,
-                horizontal=True,
-                captions=["1 min (vandaag)", "5 min (vandaag)",
-                          "15 min (vandaag)", "1 uur (5 dagen)"],
-            )
-        with col_ref:
-            st.write("")
-            if st.button("🔄 Verversen", key="live_refresh"):
-                st.cache_data.clear()
-                st.rerun()
+        intraday_interval = st.radio(
+            "Interval",
+            ["1m", "5m", "15m", "1h"],
+            index=1,
+            horizontal=True,
+            captions=["1 min (vandaag)", "5 min (vandaag)",
+                      "15 min (vandaag)", "1 uur (5 dagen)"],
+        )
 
-        df_intra = load_intraday(selected_symbol, intraday_interval)
+        df_intra = load_intraday(live_symbol, intraday_interval)
 
         if df_intra is None or df_intra.empty:
             st.warning("Geen intraday data beschikbaar. "
@@ -363,7 +383,7 @@ with tab_live:
                 ), row=2, col=1)
 
             fig.update_layout(
-                title=f"{selected_name} — Intraday ({intraday_interval}, ~15 min vertraging)",
+                title=f"{live_name} — Intraday ({intraday_interval}, ~15 min vertraging)",
                 xaxis_rangeslider_visible=False,
                 height=500, template=template,
                 margin=dict(l=10, r=10, t=60, b=10),
